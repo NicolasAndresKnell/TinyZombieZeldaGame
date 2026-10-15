@@ -50,6 +50,7 @@ export interface HeroState {
   f: Direction;                                // facing
   a: string;                                   // current animation key
   d: boolean;                                  // dead
+  n?: string;                                  // player name (untrusted: show as text only)
 }
 
 export interface Peer { id: string; hero: HeroState }

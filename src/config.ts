@@ -83,6 +83,7 @@ export const SHADOW_ALPHA = 0.4;
 // Multiplayer: how often we send our hero, and how other heroes are drawn.
 export const NET = {
   channel: 'tiny-zombie',
+  maxNameLength: 12,
   sendMs: 100, heartbeatMs: 1000, staleMs: 5000, smoothing: 12,
   tints: [0x8fd3ff, 0xffd36b, 0xb48cff, 0x7dffa0, 0xff9ad5],
 };
