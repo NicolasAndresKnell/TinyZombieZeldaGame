@@ -1,7 +1,9 @@
 import Phaser from 'phaser';
 import { BRAINS_TO_WIN, ENEMY_TYPES, HUD_DEPTH, PLAYER, VIEWPORT, UI } from '../config';
 import type { GameScene } from '../scenes/GameScene';
+import { TILE_KIND } from '../types';
 import { HEIGHT_LEVEL_LABELS } from '../world/terrain';
+import { Minimap } from './Minimap';
 
 const SCREEN_CENTER_X = VIEWPORT.width / 2, SCREEN_CENTER_Y = VIEWPORT.height / 2;
 const STYLE: Phaser.Types.GameObjects.Text.TextStyle = {
@@ -17,6 +19,7 @@ export class Hud {
   private bossBar: Phaser.GameObjects.Graphics;
   private bossLabel: Phaser.GameObjects.Text;
   private pointer: Phaser.GameObjects.Graphics;
+  private minimap: Minimap;
 
   constructor(private scene: GameScene) {
     const add = scene.add;
@@ -25,9 +28,9 @@ export class Hud {
     for (let i = 0; i < PLAYER.maxHealth; i++) this.hearts.push(pin(add.image(6 + i * 15, 6, 'heart').setOrigin(0)));
     this.levelLabel = pin(add.text(6, 20, '', { ...STYLE, fontSize: '9px', color: '#c9d2cc' }).setResolution(4));
 
-    pin(add.image(292, 3, 'brain').setOrigin(1, 0));
+    pin(add.image(292, 3, 'brain', 0).setOrigin(1, 0));
     this.brainText = pin(add.text(316, 4, '', STYLE).setOrigin(1, 0).setResolution(4));
-    pin(add.image(290, 23, 'brain_drop').setOrigin(1, 0));
+    pin(add.image(290, 23, 'brain_drop', 0).setOrigin(1, 0));
     this.dropText = pin(add.text(316, 21, '', { ...STYLE, fontSize: '9px' }).setOrigin(1, 0).setResolution(4));
     pin(add.image(289, 37, 'skull').setOrigin(1, 0).setTint(0xd9d0c4));
     this.enemyText = pin(add.text(316, 35, '', { ...STYLE, fontSize: '9px' }).setOrigin(1, 0).setResolution(4));
@@ -35,13 +38,14 @@ export class Hud {
     this.bossBar = pin(add.graphics());
     this.bossLabel = pin(add.text(SCREEN_CENTER_X, 157, 'BRAIN KING', { ...STYLE, fontSize: '9px', color: '#ffce48' }).setOrigin(0.5).setResolution(4));
     this.pointer = add.graphics().setDepth(HUD_DEPTH - 1);
+    this.minimap = new Minimap(scene);
     this.updateHearts();
     this.updateCounters();
   }
 
   update() {
     const { player, boss } = this.scene;
-    this.levelLabel.setText(player.onStairs ? 'STAIRS' : HEIGHT_LEVEL_LABELS[player.level]);
+    this.levelLabel.setText(player.tileKind === TILE_KIND.Ramp ? 'RAMP' : player.onStairs ? 'STAIRS' : HEIGHT_LEVEL_LABELS[player.level]);
     const show = !!boss && !boss.dead;
     this.bossBar.setVisible(show); this.bossLabel.setVisible(show);
     if (show) {
@@ -51,6 +55,7 @@ export class Hud {
         .fillStyle(UI.gold, 1).fillRect(81, 167, 158 * healthFraction, 5);
     }
     this.drawPointer();
+    this.minimap.update(this.scene.time.now);
   }
 
   updateHearts() {

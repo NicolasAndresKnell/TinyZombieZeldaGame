@@ -92,7 +92,7 @@ export class Player extends Walker {
       const hitboxWidth = facingVector.x ? hit.height : hit.width, hitboxHeight = facingVector.x ? hit.width : hit.height;
       area = { rect: new Phaser.Geom.Rectangle(centerX - hitboxWidth / 2, centerY - hitboxHeight / 2, hitboxWidth, hitboxHeight) };
     }
-    if (this.comboStep > 1) this.scene.hud.popText(this.x, this.y - 30, hit.isFinisher ? 'x3!' : 'x2', hit.isFinisher ? '#ffce48' : '#fff4e0');
+    if (this.comboStep > 1) this.scene.hud.popText(this.x, this.y - 30, hit.isFinisher ? 'x3!' : 'x2', hit.isFinisher ? '#c8f0a8' : '#fff4e0');
     this.scene.time.delayedCall(hit.hitDelayMs, () => {
       if (!this.isDead) this.scene.onPlayerAttack({ ...area, damage: hit.damage, knockbackSpeed: hit.knockbackSpeed, isFinisher: hit.isFinisher });
     });

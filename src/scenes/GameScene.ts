@@ -16,7 +16,7 @@ const LEVEL = levelData as unknown as LevelData;
 
 export interface Pickup {
   x: number; y: number; level: number;
-  image: Phaser.GameObjects.Image; shadow: Phaser.GameObjects.Ellipse; hoverTween: Phaser.Tweens.Tween;
+  image: Phaser.GameObjects.Sprite; shadow: Phaser.GameObjects.Ellipse; hoverTween: Phaser.Tweens.Tween;
   taken: boolean;
 }
 
@@ -103,7 +103,9 @@ export class GameScene extends Phaser.Scene {
 
   private makePickup(x: number, y: number, level: number, texture: 'brain' | 'brain_drop', hover: number): Pickup {
     const shadow = this.add.ellipse(x, y, texture === 'brain' ? 14 : 10, 4, 0x000000, SHADOW_ALPHA).setDepth(depthForHeight(level, y) - 1);
-    const image = this.add.image(x, y - hover, texture).setOrigin(0.5, 1).setDepth(depthForHeight(level, y));
+    const image = this.add.sprite(x, y - hover, texture, 0).setOrigin(0.5, 1).setDepth(depthForHeight(level, y));
+    image.play(`${texture}_spin`);
+    image.anims.setProgress(Math.random());
     const hoverTween = this.tweens.add({ targets: image, y: y - hover - 4, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
     return { x, y, level, image, shadow, hoverTween, taken: false };
   }

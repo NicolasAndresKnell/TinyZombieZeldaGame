@@ -14,7 +14,7 @@ export const PLAYER = {
 };
 
 interface SwordSwingTiming {
-  animation: 'attack' | 'combo';
+  animation: 'slash1' | 'slash2' | 'spin';
   swingMs: number;
   hitDelayMs: number;
   damage: number;
@@ -28,9 +28,9 @@ export type SwordComboStep = SwordSwingTiming & (
 );
 
 export const SWORD_COMBO: SwordComboStep[] = [
-  { isFinisher: false, animation: 'attack', swingMs: 240, hitDelayMs: 110, damage: 1, reach: 13, width: 20, height: 18, lungeDistance: 0, knockbackSpeed: 150 },
-  { isFinisher: false, animation: 'combo',  swingMs: 210, hitDelayMs: 90,  damage: 1, reach: 16, width: 22, height: 20, lungeDistance: 6, knockbackSpeed: 170 },
-  { animation: 'attack', swingMs: 340, hitDelayMs: 120, damage: 2, radius: 28,           lungeDistance: 4, knockbackSpeed: 240, isFinisher: true },
+  { isFinisher: false, animation: 'slash1', swingMs: 250, hitDelayMs: 110, damage: 1, reach: 13, width: 20, height: 18, lungeDistance: 0, knockbackSpeed: 150 },
+  { isFinisher: false, animation: 'slash2', swingMs: 290, hitDelayMs: 150, damage: 2, reach: 16, width: 24, height: 22, lungeDistance: 6, knockbackSpeed: 190 },
+  { animation: 'spin', swingMs: 320, hitDelayMs: 140, damage: 3, radius: 28,           lungeDistance: 4, knockbackSpeed: 250, isFinisher: true },
 ];
 export const COMBO_WINDOW_MS = 380;
 export const FINISHER_REST_MS = 260;
@@ -81,6 +81,17 @@ export const UI = {
   brain: 0xf08caa, gold: 0xffce48,
 };
 export const SHADOW_ALPHA = 0.4;
+
+export const MINIMAP = {
+  tilesPerPixel: 3,
+  refreshMs: 120,
+  colors: {
+    frame: '#0e2416', ground: '#24452e', street: '#33603e', water: '#132c1d',
+    building: '#5d9a63', outline: '#a8e09a',
+  },
+  hero: 0xeaffd8, heroRing: 0x0e2416,
+  enemy: 0x7fb85a,
+};
 
 export const MULTIPLAYER = {
   channel: 'tiny-zombie',

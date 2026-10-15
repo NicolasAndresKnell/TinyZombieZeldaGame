@@ -15,13 +15,14 @@ export const TILE_HEIGHT_LEVELS: Partial<Record<TileKind, number>> = {
 export const HEIGHT_LEVEL_LABELS = ['STREET', 'ROOF L1', 'ROOF L2', 'ROOF L3'];
 
 export const isSolid = (tileKind: TileKind) => tileKind === TILE_KIND.Water || tileKind === TILE_KIND.BuildingWall || tileKind === TILE_KIND.Obstacle;
-export const isConnector = (tileKind: TileKind) => tileKind === TILE_KIND.Stairs || tileKind === TILE_KIND.Bridge;
+export const isSlope = (tileKind: TileKind) => tileKind === TILE_KIND.Stairs || tileKind === TILE_KIND.Ramp;
+export const isConnector = (tileKind: TileKind) => isSlope(tileKind) || tileKind === TILE_KIND.Bridge;
 
 export function canEnter(from: TileKind, to: TileKind, level: number): boolean {
   if (isSolid(to)) return false;
   if (isConnector(to)) return true;
   const destinationHeight = TILE_HEIGHT_LEVELS[to];
-  if (from === TILE_KIND.Stairs) return true;
+  if (isSlope(from)) return true;
   if (from === TILE_KIND.Bridge && level >= 1) return destinationHeight !== undefined && destinationHeight >= 1;
   return destinationHeight === level;
 }

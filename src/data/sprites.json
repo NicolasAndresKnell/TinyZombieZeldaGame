@@ -8,36 +8,44 @@
    4,
    4
   ],
-  "attack_down": [
+  "slash1_down": [
    8,
    4
   ],
-  "combo_down": [
+  "slash2_down": [
    12,
    4
   ],
-  "hurt_down": [
+  "spin_down": [
    16,
+   6
+  ],
+  "hurt_down": [
+   22,
    2
   ],
   "idle_side": [
-   18,
+   24,
    4
   ],
   "walk_side": [
-   22,
+   28,
    4
   ],
-  "attack_side": [
-   26,
+  "slash1_side": [
+   32,
    4
   ],
-  "combo_side": [
-   30,
+  "slash2_side": [
+   36,
    4
+  ],
+  "spin_side": [
+   40,
+   6
   ],
   "hurt_side": [
-   34,
+   46,
    2
   ]
  },
@@ -168,5 +176,16 @@
    50,
    50
   ]
+ },
+ "brain": {
+  "brain": [
+   22,
+   19
+  ],
+  "brain_drop": [
+   17,
+   15
+  ],
+  "frames": 8
  }
 }

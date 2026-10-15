@@ -20,7 +20,7 @@ export function spinSlash(scene: Phaser.Scene, player: Walker, radius: number) {
     targets: animationProgress, progress: 1, duration: 220,
     onUpdate: () => {
       graphics.clear().lineStyle(3, 0xffffff, 1 - animationProgress.progress).strokeEllipse(player.x, player.y - 6, radius * 2 * (0.6 + animationProgress.progress * 0.4), radius * 1.3 * (0.6 + animationProgress.progress * 0.4));
-      graphics.lineStyle(1, 0xffce48, 1 - animationProgress.progress).strokeEllipse(player.x, player.y - 6, radius * 2.2 * animationProgress.progress, radius * 1.4 * animationProgress.progress);
+      graphics.lineStyle(1, 0x96d68c, 1 - animationProgress.progress).strokeEllipse(player.x, player.y - 6, radius * 2.2 * animationProgress.progress, radius * 1.4 * animationProgress.progress);
     },
     onComplete: () => graphics.destroy(),
   });

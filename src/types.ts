@@ -12,6 +12,7 @@ export const TILE_KIND = {
   Grass: 'G',
   Bridge: 'R',
   Stairs: 'T',
+  Ramp: 'M',
   RoofLevelOne: '1',
   RoofLevelTwo: '2',
   RoofLevelThree: '3',
@@ -64,6 +65,7 @@ export interface SpriteData {
   heroAnimations: AnimationFrameTable;
   zombieAnimations: AnimationFrameTable;
   propSizes: Record<string, [width: number, height: number]>;
+  brain: { brain: [width: number, height: number]; brain_drop: [width: number, height: number]; frames: number };
 }
 
 export interface NetworkPlayerState {

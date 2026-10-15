@@ -24,7 +24,7 @@ random.seed(7)
 
 # Tile kinds (one letter each, stored in the level string)
 #   S street  P paving  A lot  G grass  W water  B building wall  K block
-#   1 2 3 roofs   T stairs   R bridge (street underneath)
+#   1 2 3 roofs   T stairs   M ramp   R bridge (street underneath)
 HEIGHT = {'S': 0, 'P': 0, 'A': 0, 'G': 0, 'R': 0, '1': 1, '2': 2, '3': 3}
 SOLID = set('WBK')
 
@@ -144,25 +144,7 @@ def fix_shapes(grid):
         if not (nd.binary_dilation(m) & np.isin(grid, list('123'))).any():
             grid[m] = 'B'
 
-    # A bridge that stops at a building wall continues through it to the roof (max 4 tiles).
-    lab, n = comps(grid == 'R')
-    for i in range(1, n + 1):
-        ys, xs = np.where(lab == i)
-        horizontal = np.ptp(xs) >= np.ptp(ys)
-        rows = sorted(set(ys)) if horizontal else sorted(set(xs))
-        for r in rows:
-            line = xs[ys == r] if horizontal else ys[xs == r]
-            for end, step in ((line.min(), -1), (line.max(), 1)):
-                path, pos = [], end + step
-                for _ in range(4):
-                    cell = (r, pos) if horizontal else (pos, r)
-                    if not (0 <= cell[0] < H and 0 <= cell[1] < W): break
-                    k = grid[cell]
-                    if k in '123':
-                        for c in path: grid[c] = 'R'
-                        break
-                    if k != 'B': break
-                    path.append(cell); pos += step
+    extend_bridges(grid)
 
     # Bridges one tile thick are hard to walk on; thicken them by one tile.
     lab, n = comps(grid == 'R')
@@ -175,6 +157,187 @@ def fix_shapes(grid):
         elif np.ptp(xs) == 0:     # vertical, 1 wide → add the column to the right
             right = np.zeros_like(m); right[:, 1:] = m[:, :-1]
             grid[right & np.isin(grid, list('SPAGBK'))] = 'R'
+    keep_real_bridges(grid)
+    grid = tidy_buildings(grid)
+    grid = single_line_stairs(grid)
+    grid = add_ramps(grid)
+    grid = tidy_buildings(grid)          # carving stairs and ramps can leave slivers
+    # a staircase that no longer reaches a roof is just pavement
+    lab, n = comps(grid == 'T')
+    for i in range(1, n + 1):
+        m = lab == i
+        if not (nd.binary_dilation(m) & np.isin(grid, list('123'))).any(): grid[m] = 'P'
+    close_bridge_gaps(grid)
+    extend_bridges(grid, through='BPAGS', max_len=6)     # walls were tidied: reach the roof again
+    # a bridge must join two separate places; otherwise it goes back to street/pavement
+    # (the real bridges were picked out before tidying, see keep_real_bridges)
+    lab, n = comps(grid == 'R')
+    for i in range(1, n + 1):
+        m = lab == i
+        if not joins_two_places(grid, m):
+            nb = neighbours_of(m, grid)
+            grid[m] = 'S' if (nb == 'S').mean() > 0.4 else 'P'
+    # building slivers left by all the carving go back to pavement
+    building = np.isin(grid, list('B123'))
+    grid[(grid == 'B') & ~nd.binary_opening(building, structure=BLOCK)] = 'P'
+    return grid
+
+
+def extend_bridges(grid, through='B', max_len=4):
+    H, W = grid.shape
+    # A bridge that stops at a building wall continues through it to the roof (max 4 tiles).
+    lab, n = comps(grid == 'R')
+    for i in range(1, n + 1):
+        ys, xs = np.where(lab == i)
+        horizontal = np.ptp(xs) >= np.ptp(ys)
+        rows = sorted(set(ys)) if horizontal else sorted(set(xs))
+        for r in rows:
+            line = xs[ys == r] if horizontal else ys[xs == r]
+            for end, step in ((line.min(), -1), (line.max(), 1)):
+                path, pos = [], end + step
+                for _ in range(max_len):
+                    cell = (r, pos) if horizontal else (pos, r)
+                    if not (0 <= cell[0] < H and 0 <= cell[1] < W): break
+                    k = grid[cell]
+                    if k in '123':
+                        for c in path: grid[c] = 'R'
+                        break
+                    if k not in through: break
+                    path.append(cell); pos += step
+
+
+
+def close_bridge_gaps(grid):
+    """Bridges cross streets that show through in the plan: fill gaps of up to 3 tiles
+    along a bridge's direction."""
+    r = grid == 'R'
+    closed = nd.binary_closing(r, structure=np.ones((1, 5), bool)) | nd.binary_closing(r, structure=np.ones((5, 1), bool))
+    grid[closed & ~r & np.isin(grid, list('SPAG'))] = 'R'
+
+def joins_two_places(grid, m):
+    """Does bridge mask m touch two separate buildings or two separate roof pieces?"""
+    ring = nd.binary_dilation(m)
+    buildings, _ = comps(np.isin(grid, list('B123')))
+    places = set(('b', v) for v in np.unique(buildings[ring & (buildings > 0)]))
+    for k in '123':
+        roofs, _ = comps(grid == k)
+        places |= set((k, v) for v in np.unique(roofs[ring & (roofs > 0)]))
+    return len([p for p in places if p[0] != 'b']) >= 2 or len([p for p in places if p[0] == 'b']) >= 2
+
+def keep_real_bridges(grid):
+    """Grey strips that join two different buildings are bridges; other grey strips
+    (roof rims, ledges) were misread and go back to street or pavement."""
+    close_bridge_gaps(grid)
+    lab, n = comps(grid == 'R')
+    for i in range(1, n + 1):
+        m = lab == i
+        if not joins_two_places(grid, m):
+            nb = neighbours_of(m, grid)
+            grid[m] = 'S' if (nb == 'S').mean() > 0.4 else 'P'
+
+# ---------------------------------------------------------------- 3b building rules
+BLOCK = np.ones((5, 5), bool)     # buildings (and each roof level) are at least 5x5 tiles
+
+def tidy_buildings(grid):
+    """No lonely building tiles: everything that's part of a building must sit inside
+    a solid 5x5 block. Slivers that don't fit become pavement; roof pieces thinner than
+    3x3 drop to the level below."""
+    # Roofs need a front wall: where a roof's south edge meets open ground, add a
+    # facade (1 row for L1, 2 for taller roofs) so every building reads as a box.
+    H, W = grid.shape
+    connectors = nd.binary_dilation(np.isin(grid, list('TMR')))
+    add = []
+    for y in range(H - 1):
+        for x in range(W):
+            k = grid[y, x]
+            if k not in '123' or grid[y + 1, x] in 'B123': continue
+            rows = 1 if k == '1' else 2
+            cells = [(y + 1 + i, x) for i in range(rows) if y + 1 + i < H]
+            if all(grid[c] in 'PAG' and not connectors[c] for c in cells): add += cells
+    for c in add: grid[c] = 'B'
+    building = np.isin(grid, list('B123'))
+    solid = nd.binary_opening(building, structure=BLOCK)
+    grid[building & ~solid] = 'P'
+    for k, lower in (('3', '2'), ('2', '1'), ('1', 'B')):
+        level = np.isin(grid, [c for c in '123' if c >= k])
+        keep = nd.binary_opening(level, structure=np.ones((3, 3), bool))   # no stray roof tiles
+        grid[(grid == k) & ~keep] = lower
+    return grid
+
+def walkable_ground(k): return HEIGHT.get(k) == 0 and k not in 'TRM'
+
+def single_line_stairs(grid):
+    """Every staircase becomes one straight line, one tile wide, from the ground up to
+    a roof, and no two staircases touch. Leftover stair tiles go back to wall or ground."""
+    H, W = grid.shape
+    inside = nd.binary_opening(np.isin(grid, list('B123T')), structure=BLOCK)
+    lab, n = comps(grid == 'T')
+    old = grid == 'T'
+    grid[old] = np.where(inside[old], 'B', 'P')
+    taken = np.zeros_like(old)
+    def at(y, x): return grid[y, x] if 0 <= y < H and 0 <= x < W else 'W'
+    for i in range(1, n + 1):
+        ys, xs = np.where(lab == i)
+        best = None
+        # try each column (climbing up/down) and each row (climbing left/right) of the piece
+        for vertical in (True, False):
+            lines = sorted(set(xs)) if vertical else sorted(set(ys))
+            for c in lines:
+                for step in (-1, 1):     # direction from the ground towards the roof
+                    cells = sorted(ys[xs == c]) if vertical else sorted(xs[ys == c])
+                    if not cells: continue
+                    # walk from the ground end through stairs/wall until a roof
+                    start = cells[0] if step == 1 else cells[-1]
+                    pos = start
+                    path = []
+                    while True:
+                        cell = (pos, c) if vertical else (c, pos)
+                        k = at(*cell)
+                        if k in '123': break
+                        if k not in 'BP' or len(path) > 6: path = None; break
+                        path.append(cell); pos += step
+                    if not path: continue
+                    before = (start - step, c) if vertical else (c, start - step)
+                    if not walkable_ground(at(*before)): continue
+                    if best is None or len(path) < len(best): best = path
+        if best is None: continue
+        ring = np.zeros_like(old)
+        for (y, x) in best: ring[max(0, y - 1):y + 2, max(0, x - 1):x + 2] = True
+        if (ring & taken).any(): continue                 # another staircase right next to it
+        for cell in best: grid[cell] = 'T'; taken[cell] = True
+    return grid
+
+def add_ramps(grid, width=3, apron=2):
+    """Ramps: 3 tiles wide, from an L1 roof edge down through the wall and out onto the
+    ground (apron tiles). One per building that has room for it."""
+    H, W = grid.shape
+    def at(y, x): return grid[y, x] if 0 <= y < H and 0 <= x < W else 'W'
+    blocks, n = comps(np.isin(grid, list('B123')))
+    near_stairs = nd.binary_dilation(grid == 'T', iterations=2)
+    for b in range(1, n + 1):
+        ys, xs = np.where((blocks == b) & (grid == '1'))
+        if len(ys) == 0: continue
+        best = None
+        for (dy, dx) in ((1, 0), (-1, 0), (0, 1), (0, -1)):        # direction away from the roof
+            for y, x in zip(ys, xs):
+                # the ramp's three lanes sit side by side, across the direction of travel
+                lanes = [(y + dx * j, x + dy * j) for j in range(width)]
+                if not all(at(*l) == '1' for l in lanes): continue
+                cells, ok = [], True
+                for (ly, lx) in lanes:
+                    cy, cx, wall = ly + dy, lx + dx, 0
+                    while at(cy, cx) == 'B' and wall < 5: cells.append((cy, cx)); cy += dy; cx += dx; wall += 1
+                    if wall == 0: ok = False; break
+                    for a in range(apron):
+                        if not walkable_ground(at(cy, cx)): ok = False; break
+                        cells.append((cy, cx)); cy += dy; cx += dx
+                    if not ok or not walkable_ground(at(cy, cx)): ok = False; break
+                if not ok or any(near_stairs[c] for c in cells): continue
+                if best is None or len(cells) < len(best[0]): best = (cells, (dy, dx))
+        if best:
+            cells, d = best
+            for c in cells: grid[c] = 'M'
+            near_stairs |= nd.binary_dilation(grid == 'M', iterations=3)
     return grid
 
 
@@ -184,9 +347,9 @@ def step_ok(grid, a, b, level):
     Mirrors canEnter() in src/world/terrain.ts."""
     kb, ka = grid[b], grid[a]
     if kb in SOLID: return None
-    if kb in 'TR': return level                     # stairs/bridge: keep level
+    if kb in 'TMR': return level                    # stairs/ramp/bridge: keep level
     hb = HEIGHT[kb]
-    if ka == 'T': return hb                         # leaving stairs: any height
+    if ka in 'TM': return hb                        # leaving stairs or a ramp: any height
     if ka == 'R' and level >= 1: return hb if hb >= 1 else None
     return hb if hb == level else None
 
@@ -216,6 +379,8 @@ def bake(grid, tiles, props_img):
     def tile(i): return tiles.crop((i * T, 0, i * T + T, T))
     asphalt = [tile(1 + i) for i in range(4)]
     sand = [tile(5 + i) for i in range(4)]
+    raw_asphalt = list(asphalt)
+    def tiles_for(kind): return raw_asphalt
     paving = [tile(9 + i) for i in range(9)]
     grass_src = tile(0)
 
@@ -229,13 +394,16 @@ def bake(grid, tiles, props_img):
         out[lum > mid + 8, :3] = light
         return Image.fromarray(out.astype(np.uint8), 'RGBA')
 
-    roof_cols = {'1': ((78, 150, 140), (62, 124, 118), (104, 176, 160)),
-                 '2': ((82, 98, 146), (66, 80, 124), (104, 122, 170)),
-                 '3': ((146, 116, 178), (122, 96, 152), (172, 146, 200))}
+    # Terrain palette: the same hues as before, lifted and softened so the darker,
+    # more saturated sprites stand out on top of it.
+    roof_cols = {'1': ((128, 184, 172), (114, 168, 158), (146, 200, 186)),
+                 '2': ((130, 146, 186), (116, 130, 170), (150, 164, 202)),
+                 '3': ((176, 156, 204), (160, 140, 188), (194, 176, 220))}
     roof = {k: [recolor(asphalt[i], *c) for i in range(4)] for k, c in roof_cols.items()}
-    grass = [recolor(sand[i], (104, 128, 76), (88, 110, 64), (122, 146, 88)) for i in range(4)]
-    lot = [recolor(asphalt[i], (132, 124, 126), (116, 108, 112), (148, 140, 140)) for i in range(4)]
-    water = [recolor(asphalt[i], (40, 86, 112), (32, 70, 94), (66, 122, 146)) for i in range(4)]
+    grass = [recolor(sand[i], (150, 176, 118), (136, 162, 106), (164, 190, 130)) for i in range(4)]
+    asphalt = [recolor(asphalt[i], (124, 122, 136), (112, 110, 124), (138, 136, 150)) for i in range(4)]
+    lot = [recolor(lot_src, (176, 168, 166), (162, 154, 154), (190, 182, 180)) for lot_src in tiles_for('lot')]
+    water = [recolor(w, (92, 150, 178), (80, 134, 162), (122, 176, 200)) for w in tiles_for('lot')]
     rim = (226, 206, 190)          # the light rim colour of the tileset's rooftop
     rim_dark = (150, 128, 120)
 
@@ -251,11 +419,85 @@ def bake(grid, tiles, props_img):
     def flat_wall(x, y):
         return recolor(asphalt[(y % 2) * 2 + x % 2], (58, 60, 72), (48, 50, 62), (72, 74, 88))
     def stairs_tile(x, y):
-        im = Image.new('RGBA', (T, T), (214, 128, 56, 255)); px = im.load()
-        for yy in range(0, T, 4):
-            for xx in range(T): px[xx, yy] = (150, 82, 40, 255)          # step edges
-            for xx in range(T): px[xx, yy + 1] = (240, 168, 90, 255)     # step highlight
-        for yy in range(T): px[0, yy] = px[T - 1, yy] = (110, 60, 34, 255)
+        # warm concrete steps (no neon orange): dark step edges, light treads
+        vertical = at(y - 1, x) in 'T123' or at(y + 1, x) in 'T123' and at(y, x - 1) not in '123'
+        im = Image.new('RGBA', (T, T), (176, 150, 128, 255)); px = im.load()
+        for i in range(0, T, 4):
+            for j in range(T):
+                a, b = ((j, i), (j, i + 1)) if vertical else ((i, j), (i + 1, j))
+                px[a] = (110, 90, 80, 255); px[b] = (206, 186, 166, 255)
+        for j in range(T):
+            e1, e2 = ((0, j), (T - 1, j)) if vertical else ((j, 0), (j, T - 1))
+            px[e1] = px[e2] = (96, 78, 72, 255)
+        return im
+
+    def ramp_tile(x, y):
+        # street surface with yellow-black hazard strips on the ramp's outer sides
+        vertical = at(y - 1, x) in 'M123B' and at(y + 1, x) not in '123B' or at(y + 1, x) == 'M' or at(y - 1, x) == 'M'
+        if at(y, x - 1) == 'M' and at(y, x + 1) == 'M': vertical = True
+        im = raw_asphalt[(y % 2) * 2 + x % 2].copy()
+        im = recolor(im, (134, 132, 146), (120, 118, 132), (148, 146, 160)).copy(); px = im.load()
+        side_a = at(y, x - 1) != 'M' if vertical else at(y - 1, x) != 'M'
+        side_b = at(y, x + 1) != 'M' if vertical else at(y + 1, x) != 'M'
+        for i in range(T):
+            for j in range(4):                       # 4px strip
+                stripe = ((i + j + (y if vertical else x) * T) // 3) % 2
+                c = (236, 198, 60, 255) if stripe else (44, 42, 50, 255)
+                if side_a: px[(j, i) if vertical else (i, j)] = c
+                if side_b: px[(T - 1 - j, i) if vertical else (i, T - 1 - j)] = c
+        return im
+
+    rng = random.Random(11)
+    def grass_tile(x, y):
+        im = grass[(y % 2) * 2 + x % 2].copy(); px = im.load()
+        r = random.Random(x * 7919 + y * 104729)
+        for _ in range(r.randint(2, 4)):            # little tufts
+            tx, ty = r.randint(1, T - 3), r.randint(2, T - 2)
+            px[tx, ty] = (112, 146, 88, 255); px[tx + 1, ty - 1] = (112, 146, 88, 255); px[tx + 2, ty] = (112, 146, 88, 255)
+            px[tx + 1, ty] = (176, 202, 140, 255)
+        if r.random() < 0.18:                       # a few flowers
+            fx, fy = r.randint(2, T - 3), r.randint(2, T - 3)
+            col = r.choice([(244, 240, 226), (238, 214, 120), (226, 170, 190)])
+            px[fx, fy] = col + (255,); px[fx + 1, fy] = (120, 152, 92, 255)
+        if r.random() < 0.25:                       # darker clover patch
+            cx, cy = r.randint(3, T - 4), r.randint(3, T - 4)
+            for dx, dy in ((0, 0), (1, 0), (0, 1), (-1, 0), (0, -1)): px[cx + dx, cy + dy] = (126, 154, 98, 255)
+        return im
+
+    def street_tile(x, y):
+        im = asphalt[(y % 2) * 2 + x % 2].copy(); px = im.load()
+        r = random.Random(x * 15485863 + y * 32452843)
+        def run(dy, dx):
+            n, cy, cx = 0, y, x
+            while at(cy, cx) in 'SR' and n < 12: n += 1; cy += dy; cx += dx
+            return n
+        up, down, left, right = run(-1, 0) - 1, run(1, 0) - 1, run(0, -1) - 1, run(0, 1) - 1
+        vert_w, horiz_w = up + down + 1, left + right + 1
+        # lane dashes down the middle of streets (muted white, not neon)
+        if 3 <= vert_w <= 7 and horiz_w > 7 and up == (vert_w - 1) // 2 and x % 2 == 0:
+            yy = T - 1 if vert_w % 2 == 0 else T // 2
+            for i in range(2, 12): px[i, yy] = (214, 210, 200, 255)
+        if 3 <= horiz_w <= 7 and vert_w > 7 and left == (horiz_w - 1) // 2 and y % 2 == 0:
+            xx = T - 1 if horiz_w % 2 == 0 else T // 2
+            for i in range(2, 12): px[xx, i] = (214, 210, 200, 255)
+        if r.random() < 0.12:                       # cracks
+            cx, cy = r.randint(2, T - 3), r.randint(2, T - 3)
+            for _ in range(r.randint(4, 8)):
+                px[cx, cy] = (96, 94, 108, 255)
+                cx = max(0, min(T - 1, cx + r.choice((-1, 0, 1)))); cy = max(0, min(T - 1, cy + r.choice((0, 1))))
+        if r.random() < 0.015:                      # manhole cover
+            for yy in range(4, 12):
+                for xx in range(4, 12):
+                    d = (xx - 7.5) ** 2 + (yy - 7.5) ** 2
+                    if d < 16: px[xx, yy] = (98, 96, 108, 255) if d > 9 or (xx + yy) % 3 == 0 else (110, 108, 120, 255)
+        # curbs where the street meets pavement or grass
+        for (dy, dx, edge) in ((-1, 0, 'top'), (1, 0, 'bottom'), (0, -1, 'left'), (0, 1, 'right')):
+            k = at(y + dy, x + dx)
+            if k in 'PAGK':
+                for i in range(T):
+                    p1 = {'top': (i, 0), 'bottom': (i, T - 1), 'left': (0, i), 'right': (T - 1, i)}[edge]
+                    p2 = {'top': (i, 1), 'bottom': (i, T - 2), 'left': (1, i), 'right': (T - 2, i)}[edge]
+                    px[p1] = (196, 192, 196, 255); px[p2] = (100, 98, 112, 255)
         return im
     def bridge_tile(x, y, horizontal):
         im = Image.new('RGBA', (T, T), (150, 148, 156, 255)); px = im.load()
@@ -272,15 +514,16 @@ def bake(grid, tiles, props_img):
     for y in range(H):
         for x in range(W):
             k = grid[y, x]
-            if k in 'SR': t = asphalt[(y % 2) * 2 + x % 2]
+            if k in 'SR': t = street_tile(x, y)
             elif k == 'P': t = paving[(y % 3) * 3 + x % 3]
             elif k == 'A': t = lot[(y % 2) * 2 + x % 2]
-            elif k == 'G': t = grass[(y % 2) * 2 + x % 2]
+            elif k == 'G': t = grass_tile(x, y)
             elif k == 'W': t = water[(y % 2) * 2 + x % 2]
             elif k == 'K': t = paving[(y % 3) * 3 + x % 3]   # blocks get a prop drawn on top
             elif k in '123': t = roof[k][(y % 2) * 2 + x % 2]
             elif k == 'T': t = stairs_tile(x, y)
-            elif k == 'B': t = wall_tile(x, y) if at(y + 1, x) not in 'B123T' or at(y + 2, x) not in 'B123T' else flat_wall(x, y)
+            elif k == 'M': t = ramp_tile(x, y)
+            elif k == 'B': t = wall_tile(x, y) if at(y + 1, x) not in 'B123TM' or at(y + 2, x) not in 'B123TM' else flat_wall(x, y)
             ground.paste(t, (x * T, y * T))
             if k == 'R':
                 horiz = at(y, x - 1) == 'R' or at(y, x + 1) == 'R'
@@ -298,7 +541,7 @@ def bake(grid, tiles, props_img):
             # roof rims where a roof meets anything lower
             if k in '123':
                 h = HEIGHT[k]
-                def lower(yy, xx): return HEIGHT.get(at(yy, xx), -1) < h and at(yy, xx) != 'T'
+                def lower(yy, xx): return HEIGHT.get(at(yy, xx), -1) < h and at(yy, xx) not in 'TM'
                 X, Y = x * T, y * T
                 if lower(y - 1, x):
                     for i in range(T): gp[X + i, Y] = rim; gp[X + i, Y + 1] = rim
@@ -308,11 +551,8 @@ def bake(grid, tiles, props_img):
                     for i in range(T): gp[X, Y + i] = rim; gp[X + 1, Y + i] = rim
                 if lower(y, x + 1):
                     for i in range(T): gp[X + T - 1, Y + i] = rim_dark; gp[X + T - 2, Y + i] = rim
-            # soft drop shadows below and right of buildings (light from top-left)
-            if HEIGHT.get(k, 9) == 0 or k == 'K':
-                tall = lambda yy, xx: at(yy, xx) in 'B123'
-                if tall(y - 1, x): shade(x * T, y * T, x * T + T, y * T + 5, 0.72)
-                if tall(y, x - 1): shade(x * T, y * T, x * T + 4, y * T + T, 0.78)
+
+    ground = cast_shadows(ground, grid)
 
     # bridge railings: darker edges where the bridge meets non-bridge tiles
     bp = bridge.load()
@@ -325,14 +565,46 @@ def bake(grid, tiles, props_img):
                 if at(y + 1, x) != 'R': bp[X + i, Y + T - 1] = (60, 58, 70, 255); bp[X + i, Y + T - 2] = (88, 86, 98, 255)
                 if at(y, x - 1) != 'R' and at(y, x - 1) not in '123T': bp[X, Y + i] = (88, 86, 98, 255)
                 if at(y, x + 1) != 'R' and at(y, x + 1) not in '123T': bp[X + T - 1, Y + i] = (60, 58, 70, 255)
+    # bridges cast a thin shadow on the street below
+    ba = np.array(bridge)[..., 3] > 0
+    sh = np.zeros_like(ba); sh[6:, 4:] = ba[:-6, :-4]
+    g = np.array(ground).astype(float)
+    g[sh & ~ba, :3] *= 0.78
+    ground = Image.fromarray(g.astype(np.uint8), 'RGBA')
     return ground, bridge
 
 
+def cast_shadows(ground, grid):
+    """Light comes from the top-left: every building throws a shadow down and to the
+    right, longer for taller roofs. Lower roofs catch the shadow of higher ones."""
+    H, W = grid.shape
+    height = np.zeros((H, W))
+    blocks, n = comps(np.isin(grid, list('B123')))
+    tallest = nd.maximum(np.vectorize(lambda k: HEIGHT.get(k, 0) if k in '123' else 0)(grid), blocks, range(1, n + 1))
+    for i in range(1, n + 1):
+        m = blocks == i
+        height[m & (grid == 'B')] = max(1, tallest[i - 1])           # walls are as tall as their building
+    for k in '123': height[grid == k] = int(k)
+    hp = np.kron(height, np.ones((T, T)))
+    shade = np.zeros(hp.shape)
+    for lvl in (1, 2, 3):
+        caster = hp >= lvl
+        reach = 7 * lvl                                          # pixels of shadow per level
+        m = np.zeros_like(caster)
+        for s in range(1, reach + 1):
+            dx = int(round(s * 0.7))
+            m[s:, dx:] |= caster[:-s, :hp.shape[1] - dx] if dx else caster[:-s, :]
+        shade[m & (hp < lvl)] += 1
+    g = np.array(ground).astype(float)
+    g[..., :3] *= np.where(shade > 0, 0.8 - 0.06 * np.minimum(shade - 1, 2), 1.0)[..., None]
+    return Image.fromarray(np.clip(g, 0, 255).astype(np.uint8), 'RGBA')
+
+
 def place_blocks(grid):
-    """Turn every block area into props from the tileset (dumpsters, crates, barrels)."""
+    """Turn every block area into props from the tileset (dumpsters, barrels, bags, tyres)."""
     props = []
     lab, n = comps(grid == 'K')
-    smalls = ['barrel', 'bag', 'tire', 'bag2', 'box']
+    smalls = ['barrel', 'bag', 'tire', 'bag2']
     for i in range(1, n + 1):
         ys, xs = np.where(lab == i)
         y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
@@ -343,7 +615,7 @@ def place_blocks(grid):
             while bx < x1:
                 left = x1 - bx
                 if left >= 3 and by - y0 >= 2: props.append(['dumpster', bx * T + 24, by * T]); bx += 3
-                elif left >= 2: props.append(['crate', bx * T + 16, by * T]); bx += 2
+
                 else: props.append([random.choice(smalls), bx * T + 8, by * T]); bx += 1
     return props
 
@@ -421,7 +693,7 @@ def main():
 
     reach_cells = {}
     for (c, lv) in reach:
-        if grid[c] not in 'TR': reach_cells[c] = lv
+        if grid[c] not in 'TRM': reach_cells[c] = lv
     roofs_total = np.isin(grid, list('123')).sum()
     roofs_reached = sum(1 for c, lv in reach_cells.items() if lv >= 1)
     print(f'grid {W}x{H}, reachable tiles {len(reach_cells)}, roof tiles reachable {roofs_reached}/{roofs_total}')
@@ -439,15 +711,15 @@ def main():
 
     tiles = load_rgba(os.path.join(HERE, 'out', 'tiles.png'))
     ground_img, bridge_img = bake(grid, tiles, None)
-    # Contrast: the map steps back (darker, less saturated) so characters and props pop.
+    # Contrast: the map stays light and a little desaturated so the sprites pop.
     from PIL import ImageEnhance
     def recede(im, bright, sat):
         alpha = im.getchannel('A')
         rgb = ImageEnhance.Color(im.convert('RGB')).enhance(sat)
         rgb = ImageEnhance.Brightness(rgb).enhance(bright).convert('RGBA')
         rgb.putalpha(alpha); return rgb
-    ground_img = recede(ground_img, 0.8, 0.78)
-    bridge_img = recede(bridge_img, 0.9, 0.85)
+    ground_img = recede(ground_img, 1.04, 0.86)     # terrain: light and calm
+    bridge_img = recede(bridge_img, 1.04, 0.86)
 
     level = {
         'width': W, 'height': H, 'tiles': ''.join(grid.ravel()),
@@ -459,7 +731,7 @@ def main():
     ground_img.save(os.path.join(ROOT, 'public', 'assets', 'level_ground.png'), 'PNG', optimize=True)
     bridge_img.save(os.path.join(ROOT, 'public', 'assets', 'level_bridges.png'), 'PNG', optimize=True)
     with open(os.path.join(ROOT, 'src', 'data', 'level.json'), 'w') as f:
-        f.write(json.dumps(level, default=int) + '\n')
+        f.write(json.dumps(level, default=int, indent=1) + '\n')
 
     # preview: everything composited, with brains and zombies marked
     os.makedirs(os.path.join(HERE, 'out'), exist_ok=True)
@@ -472,8 +744,7 @@ def main():
     d.rectangle((start[1] * T, start[0] * T, start[1] * T + 15, start[0] * T + 15), fill=(255, 255, 255))
     pv.save(os.path.join(HERE, 'out', 'level_preview.png'))
     np.save(os.path.join(HERE, 'out', 'grid.npy'), grid)
-    print('brains', len(brains), 'zombies', len(zombies), 'props', len(props), 'trees', len(trees),
-          'ground png KB', len(images['level_ground']) * 3 // 4 // 1024)
+    print('brains', len(brains), 'zombies', len(zombies), 'props', len(props), 'trees', len(trees))
 
 
 if __name__ == '__main__':

@@ -3,6 +3,7 @@ import Phaser from 'phaser';
 import { CHARACTER_FRAME, depthForHeight, SHADOW_ALPHA } from '../config';
 import type { GameScene } from '../scenes/GameScene';
 import type { TileKind } from '../types';
+import { isSlope } from '../world/terrain';
 
 export class Walker extends Phaser.GameObjects.Sprite {
   declare scene: GameScene;
@@ -22,7 +23,7 @@ export class Walker extends Phaser.GameObjects.Sprite {
     this.shadow = scene.add.ellipse(x, y, 12 * scale, 4 * scale, 0x000000, SHADOW_ALPHA);
   }
 
-  get onStairs() { return this.tileKind === TILE_KIND.Stairs; }
+  get onStairs() { return isSlope(this.tileKind); }
 
   sameHeightAs(other: Walker) {
     return this.level === other.level || this.onStairs || other.onStairs;
