@@ -6,7 +6,7 @@ export function shockwave(scene: Phaser.Scene, from: Walker, radius: number) {
   const graphics = scene.add.graphics().setDepth(depthForHeight(from.level, from.y) - 2);
   const ring = { radius: 4 };
   scene.tweens.add({
-    targets: ring, radius: radius, duration: 260, ease: 'Cubic.out',
+    targets: ring, radius, duration: 260, ease: 'Cubic.out',
     onUpdate: () => graphics.clear().lineStyle(3, 0xffe2b0, 1 - ring.radius / radius * 0.6).strokeEllipse(from.x, from.y - 2, ring.radius * 2, ring.radius * 1.2),
     onComplete: () => graphics.destroy(),
   });

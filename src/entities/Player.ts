@@ -6,7 +6,7 @@ import type { Direction } from '../types';
 import { Walker } from './Walker';
 
 type KeyboardKey = Phaser.Input.Keyboard.Key;
-type PlayerControls = Record<'up' | 'down' | 'left' | 'right' | 'w' | 'a' | 's' | 'd' | 'attack' | 'attack2', KeyboardKey>;
+type PlayerControls = Record<'up' | 'down' | 'left' | 'right' | 'moveUp' | 'moveLeft' | 'moveDown' | 'moveRight' | 'attack' | 'alternateAttack', KeyboardKey>;
 
 export type PlayerAttackHitbox =
   ({ rect: Phaser.Geom.Rectangle; radius?: undefined } | { radius: number; rect?: undefined })
@@ -26,8 +26,8 @@ export class Player extends Walker {
   constructor(scene: GameScene, x: number, y: number) {
     super(scene, x, y, 'hero', 0);
     this.keys = scene.input.keyboard!.addKeys({
-      up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT', w: 'W', a: 'A', s: 'S', d: 'D',
-      attack: 'SPACE', attack2: 'J',
+      up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT', moveUp: 'W', moveLeft: 'A', moveDown: 'S', moveRight: 'D',
+      attack: 'SPACE', alternateAttack: 'J',
     }) as PlayerControls;
     this.playAnimation('idle');
   }
@@ -46,7 +46,7 @@ export class Player extends Walker {
     if (this.applyPush(time, deltaSeconds)) return;
 
     const keys = this.keys;
-    const pressed = Phaser.Input.Keyboard.JustDown(keys.attack) || Phaser.Input.Keyboard.JustDown(keys.attack2);
+    const pressed = Phaser.Input.Keyboard.JustDown(keys.attack) || Phaser.Input.Keyboard.JustDown(keys.alternateAttack);
     if (time < this.attackUntil) {
       if (pressed) this.queuedAttack = true;
       return;
@@ -57,8 +57,8 @@ export class Player extends Walker {
     }
     this.queuedAttack = false;
 
-    const deltaX = Number(keys.right.isDown || keys.d.isDown) - Number(keys.left.isDown || keys.a.isDown);
-    const deltaY = Number(keys.down.isDown || keys.s.isDown) - Number(keys.up.isDown || keys.w.isDown);
+    const deltaX = Number(keys.right.isDown || keys.moveRight.isDown) - Number(keys.left.isDown || keys.moveLeft.isDown);
+    const deltaY = Number(keys.down.isDown || keys.moveDown.isDown) - Number(keys.up.isDown || keys.moveUp.isDown);
 
     const movement = new Phaser.Math.Vector2(deltaX, deltaY).normalize().scale(PLAYER.speed * deltaSeconds);
     this.scene.world.move(this, movement.x, movement.y, true);

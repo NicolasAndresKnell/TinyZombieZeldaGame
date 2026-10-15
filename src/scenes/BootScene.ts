@@ -3,7 +3,7 @@ import { CHARACTER_FRAME, ENEMY_TYPES } from '../config';
 import sprites from '../data/sprites.json';
 import type { AnimationFrameTable, SpriteData } from '../types';
 
-const { heroAnimations: heroAnims, zombieAnimations: zombieAnims, propSizes } = sprites as unknown as SpriteData;
+const { heroAnimations, zombieAnimations, propSizes } = sprites as unknown as SpriteData;
 const SHEETS = ['hero', ...Object.values(ENEMY_TYPES).map(enemyStats => enemyStats.textureKey)];
 const IMAGES = ['tiles', 'brain', 'brain_drop', 'spit', 'level_ground', 'level_bridges', ...Object.keys(propSizes)];
 const FRAME_RATE: Record<string, number> = { idle: 6, walk: 10, attack: 16, combo: 18, hurt: 12, dead: 6, shot: 12, windup: 8, cast: 10 };
@@ -18,8 +18,8 @@ export class BootScene extends Phaser.Scene {
   }
 
   create() {
-    this.createAnimations('hero', heroAnims);
-    for (const enemyStats of Object.values(ENEMY_TYPES)) this.createAnimations(enemyStats.textureKey, zombieAnims);
+    this.createAnimations('hero', heroAnimations);
+    for (const enemyStats of Object.values(ENEMY_TYPES)) this.createAnimations(enemyStats.textureKey, zombieAnimations);
     this.scene.start('GameScene');
   }
 
