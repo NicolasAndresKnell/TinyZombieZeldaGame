@@ -1,0 +1,53 @@
+<title>Untitled Adventure</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;700&family=IBM+Plex+Mono:wght@400&display=swap">
+<style>
+  /* Layout: one centred game screen, a title above, a key legend below. Single dark look by choice. */
+  :root {
+    --bg: #1a1d1c;
+    --panel: #262b29;
+    --edge: #3d4541;
+    --fg: #e8dfd3;
+    --muted: #9aa39e;
+    --accent: #e0504f;
+    --display: "Pixelify Sans", "Courier New", monospace;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg); font-family: var(--mono);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 16px; box-sizing: border-box;
+  }
+  h1 { font-family: var(--display); font-weight: 700; font-size: 1.6rem; margin: 0; letter-spacing: .04em; color: var(--fg); }
+  h1 span { color: var(--accent); }
+  #game {
+    width: min(100%, 960px); aspect-ratio: 16 / 9; max-width: 100%;
+    background: #000; border: 2px solid var(--edge); outline: none;
+  }
+  #game:focus-within { border-color: var(--accent); }
+  #game canvas { display: block; image-rendering: pixelated; }
+  .keys { display: flex; flex-wrap: wrap; gap: 8px 20px; justify-content: center; color: var(--muted); font-size: 12px; margin: 0; padding: 0; list-style: none; }
+  kbd { font-family: var(--mono); background: var(--panel); border: 1px solid var(--edge); border-bottom-width: 2px; padding: 1px 6px; color: var(--fg); }
+</style>
+
+<h1>Untitled Adventure <span>/ zombie block</span></h1>
+<div id="game" tabindex="0" aria-label="Game screen. Click to focus, then use the keyboard."></div>
+<ul class="keys">
+  <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to move</li>
+  <li><kbd>Space</kbd> or <kbd>J</kbd> to swing</li>
+  <li>Collect 10 brains to win</li>
+  <li>Orange stairs go up to the roofs</li>
+  <li><kbd>`</kbd> show blocked tiles</li>
+  <li>Click the game first if keys don't respond</li>
+</ul>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.90.0/phaser.min.js"></script>
+<script>
+/*ASSETS*/
+/*LEVEL*/
+/*GAME*/
+</script>
