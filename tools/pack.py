@@ -117,7 +117,7 @@ images = {'hero': hero, 'tiles': tileset, 'brain': brain_big, 'brain_drop': brai
 for k, im in images.items(): im.save(os.path.join(ROOT, 'public', 'assets', k + '.png'), 'PNG', optimize=True)
 sizes = {k: list(v.size) for k, v in {**props, **ui}.items()}
 with open(os.path.join(ROOT, 'src', 'data', 'sprites.json'), 'w') as f:
-    f.write(json.dumps({'heroAnims': hero_idx, 'zombieAnims': zom_idx, 'propSizes': sizes}, indent=1) + '\n')
+    f.write(json.dumps({'heroAnimations': hero_idx, 'zombieAnimations': zom_idx, 'propSizes': sizes}, indent=1) + '\n')
 print(len(images), 'images'); print(hero_idx); print(zom_idx); print(sizes)
 
 # level.py builds the big map from these ground tiles

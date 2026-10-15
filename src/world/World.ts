@@ -1,83 +1,73 @@
-// =====================================================================
-// WORLD — the tile grid and how walkers move over it.
-// Movement checks tiles instead of using a physics engine.
-// =====================================================================
-import { FEET, TILE_SIZE } from '../config';
+import { TILE_KIND } from '../types';
+import { COLLISION_FOOTPRINT, TILE_SIZE, WORLD_MOVEMENT } from '../config';
 import type { LevelData, TileKind } from '../types';
-import { canEnter, HEIGHT, isConnector, tileBase } from './terrain';
+import { canEnter, TILE_HEIGHT_LEVELS, isConnector, tileBase } from './terrain';
 
-// Anything that can walk the map: needs a position and a height level.
 export interface Mover { x: number; y: number; level: number; tileKind: TileKind }
 
 export class World {
-  readonly w: number;
-  readonly h: number;
-  readonly pixelW: number;
-  readonly pixelH: number;
+  readonly width: number;
+  readonly height: number;
+  readonly pixelWidth: number;
+  readonly pixelHeight: number;
 
   constructor(readonly level: LevelData) {
-    this.w = level.w; this.h = level.h;
-    this.pixelW = level.w * TILE_SIZE; this.pixelH = level.h * TILE_SIZE;
+    this.width = level.width; this.height = level.height;
+    this.pixelWidth = level.width * TILE_SIZE; this.pixelHeight = level.height * TILE_SIZE;
   }
 
-  kindAt(tx: number, ty: number): TileKind {
-    if (tx < 0 || ty < 0 || tx >= this.w || ty >= this.h) return 'W';   // outside = solid
-    return this.level.tiles[ty * this.w + tx] as TileKind;
+  kindAt(tileX: number, tileY: number): TileKind {
+    if (tileX < 0 || tileY < 0 || tileX >= this.width || tileY >= this.height) return TILE_KIND.Water;
+    return this.level.tiles[tileY * this.width + tileX] as TileKind;
   }
   kindAtPixel(x: number, y: number) { return this.kindAt(Math.floor(x / TILE_SIZE), Math.floor(y / TILE_SIZE)); }
 
-  // Tile indexes covered by a feet box standing at (x, y).
   tilesUnder(x: number, y: number): [number, number][] {
-    const out: [number, number][] = [];
-    const x0 = Math.floor((x - FEET.w / 2) / TILE_SIZE), x1 = Math.floor((x + FEET.w / 2 - 0.01) / TILE_SIZE);
-    const y0 = Math.floor((y - FEET.h) / TILE_SIZE), y1 = Math.floor((y - 0.01) / TILE_SIZE);
-    for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) out.push([tx, ty]);
-    return out;
+    const tiles: [number, number][] = [];
+    const minTileX = Math.floor((x - COLLISION_FOOTPRINT.width / 2) / TILE_SIZE), maxTileX = Math.floor((x + COLLISION_FOOTPRINT.width / 2 - WORLD_MOVEMENT.tileEdgeEpsilon) / TILE_SIZE);
+    const minTileY = Math.floor((y - COLLISION_FOOTPRINT.height) / TILE_SIZE), maxTileY = Math.floor((y - WORLD_MOVEMENT.tileEdgeEpsilon) / TILE_SIZE);
+    for (let tileY = minTileY; tileY <= maxTileY; tileY++) for (let tileX = minTileX; tileX <= maxTileX; tileX++) tiles.push([tileX, tileY]);
+    return tiles;
   }
 
-  // Could walker w stand at (x, y)? Only tiles it isn't already touching are checked,
-  // so standing half on stairs and half on a roof never traps you.
-  canStand(w: Mover, x: number, y: number) {
-    const from = this.kindAtPixel(w.x, w.y - 2);
-    const before = new Set(this.tilesUnder(w.x, w.y).map(([tx, ty]) => ty * this.w + tx));
-    for (const [tx, ty] of this.tilesUnder(x, y)) {
-      if (before.has(ty * this.w + tx)) continue;
-      if (!canEnter(from, this.kindAt(tx, ty), w.level)) return false;
+  canStand(mover: Mover, x: number, y: number) {
+    const from = this.kindAtPixel(mover.x, mover.y - WORLD_MOVEMENT.feetSampleOffsetY);
+    const before = new Set(this.tilesUnder(mover.x, mover.y).map(([tileX, tileY]) => tileY * this.width + tileX));
+    for (const [tileX, tileY] of this.tilesUnder(x, y)) {
+      if (before.has(tileY * this.width + tileX)) continue;
+      if (!canEnter(from, this.kindAt(tileX, tileY), mover.level)) return false;
     }
     return true;
   }
 
-  // Move one axis at a time, so you slide along walls instead of sticking.
-  // With `assist`, a blocked move nudges you around corners (up to 6px).
-  move(w: Mover, dx: number, dy: number, assist = false) {
+  move(mover: Mover, deltaX: number, deltaY: number, assist = false) {
     let moved = false;
-    for (const [mx, my] of [[dx, 0], [0, dy]]) {
-      if (!mx && !my) continue;
-      if (this.canStand(w, w.x + mx, w.y + my)) { w.x += mx; w.y += my; moved = true; continue; }
+    for (const [movementX, movementY] of [[deltaX, 0], [0, deltaY]]) {
+      if (!movementX && !movementY) continue;
+      if (this.canStand(mover, mover.x + movementX, mover.y + movementY)) { mover.x += movementX; mover.y += movementY; moved = true; continue; }
       if (!assist) continue;
-      for (let off = 1; off <= 6; off++) {
-        const s = [-1, 1].find(sign => my === 0
-          ? this.canStand(w, w.x + mx, w.y + sign * off) && this.canStand(w, w.x, w.y + sign)
-          : this.canStand(w, w.x + sign * off, w.y + my) && this.canStand(w, w.x + sign, w.y));
-        if (s) { if (my === 0) w.y += s; else w.x += s; moved = true; break; }
+      for (let offset = 1; offset <= WORLD_MOVEMENT.maximumCornerAssistDistance; offset++) {
+        const nudgeDirection = [-1, 1].find(sign => movementY === 0
+          ? this.canStand(mover, mover.x + movementX, mover.y + sign * offset) && this.canStand(mover, mover.x, mover.y + sign)
+          : this.canStand(mover, mover.x + sign * offset, mover.y + movementY) && this.canStand(mover, mover.x + sign, mover.y));
+        if (nudgeDirection) { if (movementY === 0) mover.y += nudgeDirection; else mover.x += nudgeDirection; moved = true; break; }
       }
     }
-    // Your height changes when your feet settle on a roof or ground tile.
-    const k = this.kindAtPixel(w.x, w.y - 2);
-    w.tileKind = k;
-    if (!isConnector(k)) w.level = HEIGHT[k] ?? w.level;
+
+    const tileKind = this.kindAtPixel(mover.x, mover.y - WORLD_MOVEMENT.feetSampleOffsetY);
+    mover.tileKind = tileKind;
+    if (!isConnector(tileKind)) mover.level = TILE_HEIGHT_LEVELS[tileKind] ?? mover.level;
     return moved;
   }
 
-  // The nearest street-level tile with open ground around it (searches outward in rings).
-  openGroundNear(tx: number, ty: number) {
-    const open = (x: number, y: number) => [[0, 0], [1, 0], [-1, 0], [0, -1]].every(([dx, dy]) => {
-      const k = this.kindAt(x + dx, y + dy);
-      return HEIGHT[k] === 0 && !isConnector(k);
+  openGroundNear(tileX: number, tileY: number) {
+    const open = (x: number, y: number) => [[0, 0], [1, 0], [-1, 0], [0, -1]].every(([deltaX, deltaY]) => {
+      const tileKind = this.kindAt(x + deltaX, y + deltaY);
+      return TILE_HEIGHT_LEVELS[tileKind] === 0 && !isConnector(tileKind);
     });
-    for (let r = 0; r < 12; r++) {
-      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) === r && open(tx + dx, ty + dy)) return tileBase(tx + dx, ty + dy);
+    for (let searchRadius = 0; searchRadius < WORLD_MOVEMENT.openGroundSearchRadius; searchRadius++) {
+      for (let deltaY = -searchRadius; deltaY <= searchRadius; deltaY++) for (let deltaX = -searchRadius; deltaX <= searchRadius; deltaX++) {
+        if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) === searchRadius && open(tileX + deltaX, tileY + deltaY)) return tileBase(tileX + deltaX, tileY + deltaY);
       }
     }
     return tileBase(...this.level.start);

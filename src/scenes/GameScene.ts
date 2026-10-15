@@ -1,32 +1,28 @@
-// =====================================================================
-// GAME SCENE — builds the world and runs the frame: walkers, combat,
-// pickups and objectives. Drawing helpers live in effects.ts and ui/Hud.ts.
-// =====================================================================
 import Phaser from 'phaser';
 import {
-  BRAINS_TO_WIN, BRIDGE_DEPTH, depthFor, FEET, HUD_DEPTH, PLAYER, SHADOW_ALPHA, TILE_SIZE, typeForSpawn,
+  SIMULATION, PICKUPS, SPIT_PROJECTILE, BRAINS_TO_WIN, BRIDGE_DEPTH, depthForHeight, COLLISION_FOOTPRINT, HUD_DEPTH, PLAYER, SHADOW_ALPHA, TILE_SIZE, enemyKindForSpawn,
 } from '../config';
 import levelData from '../data/level.json';
 import { spark, splat } from '../effects';
 import { Enemy } from '../entities/Enemy';
-import { Player, type PlayerHit } from '../entities/Player';
+import { Player, type PlayerAttackHitbox } from '../entities/Player';
 import { Ghosts } from '../net/Ghosts';
 import type { LevelData } from '../types';
 import { Hud } from '../ui/Hud';
-import { canEnter, HEIGHT, isSolid, tileBase } from '../world/terrain';
+import { canEnter, TILE_HEIGHT_LEVELS, isSolid, tileBase } from '../world/terrain';
 import { World } from '../world/World';
 
 const LEVEL = levelData as unknown as LevelData;
 
 export interface Pickup {
   x: number; y: number; level: number;
-  img: Phaser.GameObjects.Image; shadow: Phaser.GameObjects.Ellipse; bob: Phaser.Tweens.Tween;
+  image: Phaser.GameObjects.Image; shadow: Phaser.GameObjects.Ellipse; hoverTween: Phaser.Tweens.Tween;
   taken: boolean;
 }
 
-interface Spit {
-  x: number; y: number; vx: number; vy: number; level: number; damage: number; life: number;
-  img: Phaser.GameObjects.Image; shadow: Phaser.GameObjects.Ellipse; dead?: boolean;
+interface SpitProjectile {
+  x: number; y: number; velocityX: number; velocityY: number; level: number; damage: number; remainingLifetimeSeconds: number;
+  image: Phaser.GameObjects.Image; shadow: Phaser.GameObjects.Ellipse; dead?: boolean;
 }
 
 export class GameScene extends Phaser.Scene {
@@ -41,7 +37,7 @@ export class GameScene extends Phaser.Scene {
   totalDrops = 0;
   gameOver = false;
   hud!: Hud;
-  private spits: Spit[] = [];
+  private spits: SpitProjectile[] = [];
   private ghosts!: Ghosts;
   private bossDone = false;
   private mainDone = false;
@@ -53,38 +49,36 @@ export class GameScene extends Phaser.Scene {
   constructor() { super('GameScene'); }
 
   create() {
-    // create() runs again on restart, so reset all state here.
+
     Object.assign(this, {
       boss: null, brainsCollected: 0, dropsCollected: 0, gameOver: false, spits: [], drops: [],
       bossDone: false, mainDone: false, paused: false, freezeUntil: 0, showDebug: false,
     });
     this.world = new World(LEVEL);
 
-    // The whole map is two pre-drawn pictures: the ground, and the bridges on top.
     this.add.image(0, 0, 'level_ground').setOrigin(0).setDepth(-10);
     this.add.image(0, 0, 'level_bridges').setOrigin(0).setDepth(BRIDGE_DEPTH);
 
-    // Props and trees: depth = their base, so you're behind them when your feet are above it.
     for (const [type, x, y] of LEVEL.props) {
-      const img = this.add.image(x, y, type).setOrigin(0.5, 1).setDepth(y);
+      const image = this.add.image(x, y, type).setOrigin(0.5, 1).setDepth(y);
       const tree = type.startsWith('tree');
-      this.add.ellipse(x, y - 1, img.width * (tree ? 0.75 : 0.9), tree ? 6 : 4, 0x000000, SHADOW_ALPHA).setDepth(-1);
+      this.add.ellipse(x, y - 1, image.width * (tree ? 0.75 : 0.9), tree ? 6 : 4, 0x000000, SHADOW_ALPHA).setDepth(-1);
     }
 
-    const s = tileBase(...LEVEL.start);
-    this.player = new Player(this, s.x, s.y);
-    this.enemies = LEVEL.zombies.map(([tx, ty, lv], i) => {
-      const p = tileBase(tx, ty);
-      return new Enemy(this, p.x, p.y, lv, typeForSpawn(i));
+    const playerSpawn = tileBase(...LEVEL.start);
+    this.player = new Player(this, playerSpawn.x, playerSpawn.y);
+    this.enemies = LEVEL.zombies.map(([tileX, tileY, heightLevel], i) => {
+      const enemySpawn = tileBase(tileX, tileY);
+      return new Enemy(this, enemySpawn.x, enemySpawn.y, heightLevel, enemyKindForSpawn(i));
     });
-    this.totalDrops = this.enemies.length;     // one brain per enemy
-    this.brains = LEVEL.brains.map(([tx, ty, lv]) =>
-      this.makePickup(tx * TILE_SIZE + TILE_SIZE / 2, ty * TILE_SIZE + TILE_SIZE - 3, lv, 'brain', 6));
+    this.totalDrops = this.enemies.length;
+    this.brains = LEVEL.brains.map(([tileX, tileY, heightLevel]) =>
+      this.makePickup(tileX * TILE_SIZE + TILE_SIZE / 2, tileY * TILE_SIZE + TILE_SIZE - 3, heightLevel, 'brain', 6));
 
-    const cam = this.cameras.main;
-    cam.setBounds(0, 0, this.world.pixelW, this.world.pixelH);
-    cam.startFollow(this.player, true);
-    cam.setRoundPixels(true);
+    const camera = this.cameras.main;
+    camera.setBounds(0, 0, this.world.pixelWidth, this.world.pixelHeight);
+    camera.startFollow(this.player, true);
+    camera.setRoundPixels(true);
 
     this.debug = this.add.graphics().setDepth(HUD_DEPTH - 2);
     this.hud = new Hud(this);
@@ -94,47 +88,45 @@ export class GameScene extends Phaser.Scene {
 
   update(time: number, delta: number) {
     if (this.paused) return;
-    if (time < this.freezeUntil) return;          // hit-stop: a tiny freeze on big hits
-    const dt = Math.min(delta, 50) / 1000;        // seconds; capped so a hiccup can't tunnel through walls
-    this.player.update(time, dt);
-    this.enemies.forEach(e => e.update(time, dt, this.player));
-    this.updateSpits(dt);
+    if (time < this.freezeUntil) return;
+    const deltaSeconds = Math.min(delta, SIMULATION.maximumFrameDurationMs) / SIMULATION.millisecondsPerSecond;
+    this.player.update(time, deltaSeconds);
+    this.enemies.forEach(enemy => enemy.update(time, deltaSeconds, this.player));
+    this.updateSpits(deltaSeconds);
     this.player.syncDepth();
-    this.enemies.forEach(e => e.syncDepth());
+    this.enemies.forEach(enemy => enemy.syncDepth());
     this.checkPickups();
     this.hud.update();
     if (this.showDebug) this.drawDebug();
-    this.ghosts.update(time, dt);
+    this.ghosts.update(time, deltaSeconds);
   }
 
-  // ---- Pickups: the 10 level brains and the brains enemies drop ---------
-
   private makePickup(x: number, y: number, level: number, texture: 'brain' | 'brain_drop', hover: number): Pickup {
-    const shadow = this.add.ellipse(x, y, texture === 'brain' ? 14 : 10, 4, 0x000000, SHADOW_ALPHA).setDepth(depthFor(level, y) - 1);
-    const img = this.add.image(x, y - hover, texture).setOrigin(0.5, 1).setDepth(depthFor(level, y));
-    const bob = this.tweens.add({ targets: img, y: y - hover - 4, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
-    return { x, y, level, img, shadow, bob, taken: false };
+    const shadow = this.add.ellipse(x, y, texture === 'brain' ? 14 : 10, 4, 0x000000, SHADOW_ALPHA).setDepth(depthForHeight(level, y) - 1);
+    const image = this.add.image(x, y - hover, texture).setOrigin(0.5, 1).setDepth(depthForHeight(level, y));
+    const hoverTween = this.tweens.add({ targets: image, y: y - hover - 4, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+    return { x, y, level, image, shadow, hoverTween, taken: false };
   }
 
   private spawnDrop(enemy: Enemy) {
-    const d = this.makePickup(enemy.x, enemy.y, enemy.level, 'brain_drop', 3);
-    d.bob.pause();
-    // Pop out of the body in a little arc, then start bobbing.
-    d.img.y = enemy.y - 18; d.img.setScale(0.4);
-    this.tweens.add({ targets: d.img, y: enemy.y - 3, scale: 1, duration: 380, ease: 'Bounce.out', onComplete: () => { d.bob.resume(); } });
-    this.drops.push(d);
+    const drop = this.makePickup(enemy.x, enemy.y, enemy.level, 'brain_drop', 3);
+    drop.hoverTween.pause();
+
+    drop.image.y = enemy.y - 18; drop.image.setScale(0.4);
+    this.tweens.add({ targets: drop.image, y: enemy.y - 3, scale: 1, duration: 380, ease: 'Bounce.out', onComplete: () => { drop.hoverTween.resume(); } });
+    this.drops.push(drop);
   }
 
   private checkPickups() {
-    const p = this.player;
-    if (p.isDead || this.gameOver) return;
-    const reachable = (b: Pickup) => p.level === b.level || p.onStairs;
+    const player = this.player;
+    if (player.isDead || this.gameOver) return;
+    const reachable = (pickup: Pickup) => player.level === pickup.level || player.onStairs;
 
-    for (const b of this.brains) {
-      if (b.taken || !reachable(b) || Phaser.Math.Distance.Between(p.x, p.y, b.x, b.y) > 13) continue;
-      this.collect(b);
+    for (const pickup of this.brains) {
+      if (pickup.taken || !reachable(pickup) || Phaser.Math.Distance.Between(player.x, player.y, pickup.x, pickup.y) > PICKUPS.brainCollectionRadius) continue;
+      this.collect(pickup);
       this.brainsCollected++;
-      p.health = Math.min(PLAYER.maxHealth, p.health + 1);       // a level brain heals one heart
+      player.health = Math.min(PLAYER.maxHealth, player.health + PICKUPS.healthRestoredPerBrain);
       this.hud.updateHearts();
       this.hud.updateCounters();
       if (this.brainsCollected >= BRAINS_TO_WIN && !this.mainDone) {
@@ -144,63 +136,59 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    for (const d of this.drops) {
-      if (d.taken || !reachable(d)) continue;
-      if (Phaser.Math.Distance.Between(p.x, p.y, d.x, d.y) > 16) continue;   // drops are easier to grab
-      this.collect(d);
+    for (const drop of this.drops) {
+      if (drop.taken || !reachable(drop)) continue;
+      if (Phaser.Math.Distance.Between(player.x, player.y, drop.x, drop.y) > PICKUPS.dropCollectionRadius) continue;
+      this.collect(drop);
       this.dropsCollected++;
       this.hud.updateCounters();
       if (this.dropsCollected >= this.totalDrops && !this.boss && !this.bossDone) this.spawnBoss();
     }
   }
 
-  private collect(b: Pickup) {
-    b.taken = true;
-    b.bob.stop();
-    b.shadow.destroy();
-    this.tweens.add({ targets: b.img, y: b.img.y - 16, alpha: 0, scale: 1.6, duration: 350, onComplete: () => b.img.destroy() });
+  private collect(pickup: Pickup) {
+    pickup.taken = true;
+    pickup.hoverTween.stop();
+    pickup.shadow.destroy();
+    this.tweens.add({ targets: pickup.image, y: pickup.image.y - 16, alpha: 0, scale: 1.6, duration: 350, onComplete: () => pickup.image.destroy() });
   }
 
-  // ---- Extra objective: the Brain King ------------------------------------
-
   private spawnBoss() {
-    const s = this.world.openGroundNear(LEVEL.start[0], LEVEL.start[1] - 4);
-    this.boss = new Enemy(this, s.x, s.y, 0, 'boss');
+    const bossSpawn = this.world.openGroundNear(LEVEL.start[0], LEVEL.start[1] - 4);
+    this.boss = new Enemy(this, bossSpawn.x, bossSpawn.y, 0, 'boss');
     this.enemies.push(this.boss);
     this.cameras.main.shake(400, 0.006);
     this.hud.toast('The Brain King has risen in the plaza!');
     this.hud.updateCounters();
   }
 
-  // ---- Combat -------------------------------------------------------------
-
-  onPlayerAttack(hit: PlayerHit) {
+  onPlayerAttack(hit: PlayerAttackHitbox) {
     let landed = false;
-    for (const e of [...this.enemies]) {
-      if (e.dead || !e.sameHeightAs(this.player)) continue;
-      const box = e.hurtBox;
+    for (const enemy of [...this.enemies]) {
+      if (enemy.dead || !enemy.sameHeightAs(this.player)) continue;
+      const box = enemy.hurtBox;
       const touched = hit.radius !== undefined
         ? Phaser.Geom.Intersects.CircleToRectangle(new Phaser.Geom.Circle(this.player.x, this.player.y - 6, hit.radius), box)
         : Phaser.Geom.Intersects.RectangleToRectangle(hit.rect, box);
       if (!touched) continue;
       landed = true;
-      spark(this, e.x, e.y - 10 * e.stats.scale);
-      if (e.takeHit(this.player.x, this.player.y, this.time.now, hit.damage, hit.knock)) this.onEnemyKilled(e);
+      spark(this, enemy.x, enemy.y - 10 * enemy.stats.scale);
+      if (enemy.takeHit(this.player.x, this.player.y, this.time.now, hit.damage, hit.knockbackSpeed)) this.onEnemyKilled(enemy);
     }
     if (landed) {
-      this.cameras.main.shake(hit.finisher ? 120 : 60, hit.finisher ? 0.005 : 0.002);
-      if (hit.finisher) this.freezeUntil = this.time.now + 70;
+      this.cameras.main.shake(hit.isFinisher ? 120 : 60, hit.isFinisher ? 0.005 : 0.002);
+      if (hit.isFinisher) this.freezeUntil = this.time.now + 70;
     }
   }
 
-  private onEnemyKilled(e: Enemy) {
-    Phaser.Utils.Array.Remove(this.enemies, e);
-    if (e === this.boss) {
+  private onEnemyKilled(enemy: Enemy) {
+    Phaser.Utils.Array.Remove(this.enemies, enemy);
+    if (enemy === this.boss) {
       this.bossDone = true;
       this.cameras.main.shake(500, 0.008);
       this.time.delayedCall(900, () => this.showPanel('Brain King defeated!', 'You are the legend of the zombie block.', '', false));
     } else {
-      this.spawnDrop(e);
+      this.spawnDrop(enemy);
     }
     this.hud.updateCounters();
   }
@@ -214,53 +202,50 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  // Spitter projectiles fly in a straight line at the shooter's height.
   spawnSpit(enemy: Enemy, angle: number, speed: number, damage: number) {
-    const x = enemy.x + Math.cos(angle) * 8, y = enemy.y + Math.sin(angle) * 8;
-    const img = this.add.image(x, y - 9, 'spit').setDepth(depthFor(enemy.level, y));
-    const shadow = this.add.ellipse(x, y, 5, 2, 0x000000, SHADOW_ALPHA).setDepth(depthFor(enemy.level, y) - 1);
-    this.spits.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, level: enemy.level, damage, img, shadow, life: 2.2 });
+    const x = enemy.x + Math.cos(angle) * SPIT_PROJECTILE.spawnOffset, y = enemy.y + Math.sin(angle) * SPIT_PROJECTILE.spawnOffset;
+    const image = this.add.image(x, y - SPIT_PROJECTILE.imageOffsetY, 'spit').setDepth(depthForHeight(enemy.level, y));
+    const shadow = this.add.ellipse(x, y, 5, 2, 0x000000, SHADOW_ALPHA).setDepth(depthForHeight(enemy.level, y) - 1);
+    this.spits.push({ x, y, velocityX: Math.cos(angle) * speed, velocityY: Math.sin(angle) * speed, level: enemy.level, damage, image, shadow, remainingLifetimeSeconds: SPIT_PROJECTILE.lifetimeSeconds });
   }
 
-  private updateSpits(dt: number) {
-    const p = this.player;
-    for (const s of this.spits) {
-      s.x += s.vx * dt; s.y += s.vy * dt; s.life -= dt;
-      const k = this.world.kindAtPixel(s.x, s.y);
-      const blocked = isSolid(k) || (HEIGHT[k] ?? 0) > s.level;     // walls and higher roofs stop it
-      const hit = !p.isDead && Math.abs(p.x - s.x) < 6 && Math.abs(p.y - s.y) < 6 && (p.level === s.level || p.onStairs);
-      if (hit) this.hurtPlayer(s.x - s.vx, s.y - s.vy, s.damage);
-      if (hit || blocked || s.life <= 0) {
-        s.dead = true; s.img.destroy(); s.shadow.destroy();
-        splat(this, s.x, s.y - 6, s.level);
+  private updateSpits(deltaSeconds: number) {
+    const player = this.player;
+    for (const projectile of this.spits) {
+      projectile.x += projectile.velocityX * deltaSeconds; projectile.y += projectile.velocityY * deltaSeconds; projectile.remainingLifetimeSeconds -= deltaSeconds;
+      const tileKind = this.world.kindAtPixel(projectile.x, projectile.y);
+      const blocked = isSolid(tileKind) || (TILE_HEIGHT_LEVELS[tileKind] ?? 0) > projectile.level;
+      const hit = !player.isDead && Math.abs(player.x - projectile.x) < SPIT_PROJECTILE.collisionHalfExtent && Math.abs(player.y - projectile.y) < SPIT_PROJECTILE.collisionHalfExtent && (player.level === projectile.level || player.onStairs);
+      if (hit) this.hurtPlayer(projectile.x - projectile.velocityX, projectile.y - projectile.velocityY, projectile.damage);
+      if (hit || blocked || projectile.remainingLifetimeSeconds <= 0) {
+        projectile.dead = true; projectile.image.destroy(); projectile.shadow.destroy();
+        splat(this, projectile.x, projectile.y - 6, projectile.level);
         continue;
       }
-      s.img.setPosition(s.x, s.y - 9).setDepth(depthFor(s.level, s.y)).rotation += dt * 10;
-      s.shadow.setPosition(s.x, s.y).setDepth(depthFor(s.level, s.y) - 1);
+      projectile.image.setPosition(projectile.x, projectile.y - SPIT_PROJECTILE.imageOffsetY).setDepth(depthForHeight(projectile.level, projectile.y)).rotation += deltaSeconds * SPIT_PROJECTILE.rotationSpeed;
+      projectile.shadow.setPosition(projectile.x, projectile.y).setDepth(depthForHeight(projectile.level, projectile.y) - 1);
     }
-    this.spits = this.spits.filter(s => !s.dead);
+    this.spits = this.spits.filter(projectile => !projectile.dead);
   }
 
-  // Pauses play behind a panel. canContinue: Enter resumes; otherwise the run is over.
   private showPanel(title: string, line: string, extra: string, canContinue: boolean) {
     if (!canContinue) this.gameOver = true;
     this.paused = true;
     this.hud.showPanel(title, line, extra, canContinue ? () => { this.paused = false; } : undefined);
   }
 
-  // Backtick: red = tiles you can't step onto from where you stand, green = feet boxes.
   private drawDebug() {
-    const g = this.debug.clear();
-    const cam = this.cameras.main, p = this.player;
-    const from = this.world.kindAtPixel(p.x, p.y - 2);
-    const tx0 = Math.floor(cam.worldView.x / TILE_SIZE), ty0 = Math.floor(cam.worldView.y / TILE_SIZE);
-    for (let ty = ty0; ty <= ty0 + 12; ty++) for (let tx = tx0; tx <= tx0 + 21; tx++) {
-      if (!canEnter(from, this.world.kindAt(tx, ty), p.level)) {
-        g.fillStyle(0xff3b3b, 0.25).fillRect(tx * TILE_SIZE, ty * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+    const graphics = this.debug.clear();
+    const camera = this.cameras.main, player = this.player;
+    const from = this.world.kindAtPixel(player.x, player.y - 2);
+    const firstVisibleTileX = Math.floor(camera.worldView.x / TILE_SIZE), firstVisibleTileY = Math.floor(camera.worldView.y / TILE_SIZE);
+    for (let tileY = firstVisibleTileY; tileY <= firstVisibleTileY + 12; tileY++) for (let tileX = firstVisibleTileX; tileX <= firstVisibleTileX + 21; tileX++) {
+      if (!canEnter(from, this.world.kindAt(tileX, tileY), player.level)) {
+        graphics.fillStyle(0xff3b3b, 0.25).fillRect(tileX * TILE_SIZE, tileY * TILE_SIZE, TILE_SIZE, TILE_SIZE);
       }
     }
-    for (const w of [p, ...this.enemies]) {
-      g.lineStyle(1, 0x40ff80, 1).strokeRect(w.x - FEET.w / 2, w.y - FEET.h, FEET.w, FEET.h);
+    for (const walker of [player, ...this.enemies]) {
+      graphics.lineStyle(1, 0x40ff80, 1).strokeRect(walker.x - COLLISION_FOOTPRINT.width / 2, walker.y - COLLISION_FOOTPRINT.height, COLLISION_FOOTPRINT.width, COLLISION_FOOTPRINT.height);
     }
   }
 }

@@ -1,5 +1,5 @@
 {
- "heroAnims": {
+ "heroAnimations": {
   "idle_down": [
    0,
    4
@@ -41,7 +41,7 @@
    2
   ]
  },
- "zombieAnims": {
+ "zombieAnimations": {
   "idle": [
    0,
    4

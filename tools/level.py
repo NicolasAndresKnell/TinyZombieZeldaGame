@@ -450,7 +450,7 @@ def main():
     bridge_img = recede(bridge_img, 0.9, 0.85)
 
     level = {
-        'w': W, 'h': H, 'tiles': ''.join(grid.ravel()),
+        'width': W, 'height': H, 'tiles': ''.join(grid.ravel()),
         'start': [start[1], start[0]],
         'props': props + trees,
         'zombies': [[c[1], c[0], lv] for c, lv in zombies],

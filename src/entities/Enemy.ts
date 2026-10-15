@@ -1,155 +1,149 @@
-// =====================================================================
-// ENEMY — one class for every type; ENEMY_TYPES says how each one fights.
-// The art faces right, so we mirror it (flipX) to face left.
-// =====================================================================
 import Phaser from 'phaser';
-import { DIRS, ENEMY_TYPES, SLEEP_RANGE } from '../config';
+import { DIRECTION_VECTORS, ENEMY_TYPES, ENEMY_ACTIVATION_DISTANCE } from '../config';
 import { shockwave } from '../effects';
 import type { GameScene } from '../scenes/GameScene';
-import type { EnemyType, EnemyTypeName, Vec } from '../types';
+import type { EnemyStats, EnemyKind, Position } from '../types';
 import type { Player } from './Player';
 import { Walker } from './Walker';
 
 export class Enemy extends Walker {
-  readonly stats: EnemyType;
+  readonly stats: EnemyStats;
   health: number;
   dead = false;
   private stunnedUntil = 0;
   private attackUntil = 0;
   private nextAttackAt = 0;
   private nextTurnAt = 0;
-  private wander: Vec = { x: 0, y: 0 };
-  private bossMove = 0;           // the boss alternates between slam and spit
+  private wander: Position = { x: 0, y: 0 };
+  private bossMove = 0;
 
-  constructor(scene: GameScene, x: number, y: number, level: number, readonly typeName: EnemyTypeName) {
+  constructor(scene: GameScene, x: number, y: number, level: number, readonly typeName: EnemyKind) {
     const type = ENEMY_TYPES[typeName];
-    super(scene, x, y, type.sheet, level, type.scale);
+    super(scene, x, y, type.textureKey, level, type.scale);
     this.stats = type;
     this.health = type.health;
-    this.playAnim('idle');
-    this.anims.setProgress(Math.random());   // don't all bob in sync
+    this.playAnimation('idle');
+    this.anims.setProgress(Math.random());
   }
 
-  playAnim(anim: string, restart = false) { return this.anims.play(`${this.stats.sheet}_${anim}`, !restart); }
+  playAnimation(animation: string, restart = false) { return this.anims.play(`${this.stats.textureKey}_${animation}`, !restart); }
 
-  // The part of the body the sword can hit.
   get hurtBox() {
-    const s = this.stats.scale;
-    return new Phaser.Geom.Rectangle(this.x - 6 * s, this.y - 16 * s, 12 * s, 16 * s);
+    const scale = this.stats.scale;
+    return new Phaser.Geom.Rectangle(this.x - 6 * scale, this.y - 16 * scale, 12 * scale, 16 * scale);
   }
 
-  update(time: number, dt: number, player: Player) {
+  update(time: number, deltaSeconds: number, player: Player) {
     if (this.dead) return;
-    if (this.applyPush(time, dt)) return;
+    if (this.applyPush(time, deltaSeconds)) return;
     if (time < this.stunnedUntil || time < this.attackUntil) return;
 
-    const T = this.stats;
-    const dist = Phaser.Math.Distance.Between(this.x, this.y, player.x, player.y);
-    if (dist > Math.max(SLEEP_RANGE, T.chaseRange)) return;            // too far away to care
-    const canSee = !player.isDead && dist < T.chaseRange && this.sameHeightAs(player);
+    const stats = this.stats;
+    const distanceToPlayer = Phaser.Math.Distance.Between(this.x, this.y, player.x, player.y);
+    if (distanceToPlayer > Math.max(ENEMY_ACTIVATION_DISTANCE, stats.chaseRange)) return;
+    const canSee = !player.isDead && distanceToPlayer < stats.chaseRange && this.sameHeightAs(player);
 
-    if (canSee && time >= this.nextAttackAt && this.inAttackRange(dist)) return this.startAttack(time, player, dist);
+    if (canSee && time >= this.nextAttackAt && this.inAttackRange(distanceToPlayer)) return this.startAttack(time, player, distanceToPlayer);
 
-    let vx = 0, vy = 0;
+    let velocityX = 0, velocityY = 0;
     const toward = (speed: number, sign = 1) => {
-      vx = sign * (player.x - this.x) / dist * speed;
-      vy = sign * (player.y - this.y) / dist * speed;
+      velocityX = sign * (player.x - this.x) / distanceToPlayer * speed;
+      velocityY = sign * (player.y - this.y) / distanceToPlayer * speed;
     };
     if (canSee) {
-      if (T.keepAway) {                       // spitters hold the middle distance
-        if (dist < T.keepAway[0]) toward(T.chaseSpeed, -1);
-        else if (dist > T.keepAway[1]) toward(T.chaseSpeed);
+      if (stats.preferredDistanceRange) {
+        if (distanceToPlayer < stats.preferredDistanceRange[0]) toward(stats.chaseSpeed, -1);
+        else if (distanceToPlayer > stats.preferredDistanceRange[1]) toward(stats.chaseSpeed);
         this.setFlipX(player.x < this.x);
-      } else toward(T.chaseSpeed);
-    } else if (T.wanderSpeed) {
+      } else toward(stats.chaseSpeed);
+    } else if (stats.wanderSpeed) {
       if (time >= this.nextTurnAt) {
-        // Wander: a new random direction now and then (sometimes standing still).
-        this.wander = Phaser.Utils.Array.GetRandom([...Object.values(DIRS), { x: 0, y: 0 }, { x: 0, y: 0 }]);
+
+        this.wander = Phaser.Utils.Array.GetRandom([...Object.values(DIRECTION_VECTORS), { x: 0, y: 0 }, { x: 0, y: 0 }]);
         this.nextTurnAt = time + Phaser.Math.Between(900, 2200);
       }
-      vx = this.wander.x * T.wanderSpeed;
-      vy = this.wander.y * T.wanderSpeed;
+      velocityX = this.wander.x * stats.wanderSpeed;
+      velocityY = this.wander.y * stats.wanderSpeed;
     }
-    const moved = this.scene.world.move(this, vx * dt, vy * dt);
-    if (!moved && !canSee) this.nextTurnAt = 0;                 // bumped into something: turn
+    const moved = this.scene.world.move(this, velocityX * deltaSeconds, velocityY * deltaSeconds);
+    if (!moved && !canSee) this.nextTurnAt = 0;
 
-    if (Math.abs(vx) > 1 && !T.keepAway) this.setFlipX(vx < 0);
-    if (Math.abs(vx) > 1 && T.keepAway && !canSee) this.setFlipX(vx < 0);
-    this.playAnim(vx || vy ? 'walk' : 'idle');
+    if (Math.abs(velocityX) > 1 && !stats.preferredDistanceRange) this.setFlipX(velocityX < 0);
+    if (Math.abs(velocityX) > 1 && stats.preferredDistanceRange && !canSee) this.setFlipX(velocityX < 0);
+    this.playAnimation(velocityX || velocityY ? 'walk' : 'idle');
   }
 
-  private inAttackRange(dist: number) {
-    const T = this.stats;
-    if (T.attack === 'spit') return dist < T.keepAway![1] + 30;
-    if (T.attack === 'boss') return dist < 170;
-    return dist < T.range!;
+  private inAttackRange(distanceToPlayer: number) {
+    const stats = this.stats;
+    if (stats.attackKind === 'spit') return distanceToPlayer < stats.preferredDistanceRange![1] + 30;
+    if (stats.attackKind === 'boss') return distanceToPlayer < 170;
+    return distanceToPlayer < stats.attackRange!;
   }
 
-  private startAttack(time: number, player: Player, dist: number) {
-    const T = this.stats;
+  private startAttack(time: number, player: Player, distanceToPlayer: number) {
+    const stats = this.stats;
     const scene = this.scene;
     this.setFlipX(player.x < this.x);
-    this.attackUntil = time + T.attackMs;
-    this.nextAttackAt = time + T.cooldownMs;
+    this.attackUntil = time + stats.attackMs;
+    this.nextAttackAt = time + stats.cooldownMs;
     const swingStart = this.stunnedUntil;
-    // A hit from the player during the wind-up cancels the attack (except for heavies).
-    const cancelled = () => this.dead || (T.knockTaken >= 1 && this.stunnedUntil !== swingStart);
-    let kind: string = T.attack;
-    if (kind === 'boss') kind = dist < T.range! ? 'slam' : (this.bossMove++ % 2 ? 'fan' : 'slam');
+
+    const cancelled = () => this.dead || (stats.knockbackMultiplier >= 1 && this.stunnedUntil !== swingStart);
+    let kind: string = stats.attackKind;
+    if (kind === 'boss') kind = distanceToPlayer < stats.attackRange! ? 'slam' : (this.bossMove++ % 2 ? 'fan' : 'slam');
 
     if (kind === 'melee') {
-      this.playAnim('attack', true);
-      scene.time.delayedCall(T.windupMs, () => {
+      this.playAnimation('attack', true);
+      scene.time.delayedCall(stats.windupMs, () => {
         if (cancelled()) return;
         const inFront = this.flipX ? player.x <= this.x + 4 : player.x >= this.x - 4;
-        const close = Phaser.Math.Distance.Between(this.x, this.y, player.x, player.y) < T.reach!;
-        if (inFront && close && this.sameHeightAs(player)) scene.hurtPlayer(this.x, this.y, T.damage);
+        const close = Phaser.Math.Distance.Between(this.x, this.y, player.x, player.y) < stats.meleeReach!;
+        if (inFront && close && this.sameHeightAs(player)) scene.hurtPlayer(this.x, this.y, stats.damage);
       });
     } else if (kind === 'spit' || kind === 'fan') {
-      this.playAnim('shot', true);
-      scene.time.delayedCall(T.windupMs, () => {
+      this.playAnimation('shot', true);
+      scene.time.delayedCall(stats.windupMs, () => {
         if (cancelled()) return;
-        const base = Phaser.Math.Angle.Between(this.x, this.y, player.x, player.y);
+        const aimAngle = Phaser.Math.Angle.Between(this.x, this.y, player.x, player.y);
         const spread = kind === 'fan' ? [-0.5, -0.25, 0, 0.25, 0.5] : [0];
-        spread.forEach(da => scene.spawnSpit(this, base + da, T.spitSpeed!, T.damage > 1 ? 1 : T.damage));
+        spread.forEach(angleOffset => scene.spawnSpit(this, aimAngle + angleOffset, stats.spitSpeed!, stats.damage > 1 ? 1 : stats.damage));
       });
-    } else {                                   // slam: wind up (flashing), then a shockwave
-      this.playAnim('windup', true);
-      const flash = scene.time.addEvent({ delay: 90, repeat: Math.floor(T.windupMs / 90), callback: () => {
+    } else {
+      this.playAnimation('windup', true);
+      const flash = scene.time.addEvent({ delay: 90, repeat: Math.floor(stats.windupMs / 90), callback: () => {
         if (this.dead) return;
         if (this.isTinted) this.clearTint(); else this.setTintFill(0xffffff);
       } });
-      scene.time.delayedCall(T.windupMs, () => {
+      scene.time.delayedCall(stats.windupMs, () => {
         flash.remove(); if (!this.dead) this.clearTint();
         if (this.dead) return;
-        this.playAnim('cast', true);
-        shockwave(scene, this, T.slamRadius!);
-        const p = scene.player;
-        const dx = p.x - this.x, dy = (p.y - this.y) / 0.6;     // the ring is squashed: ground perspective
-        if (Math.hypot(dx, dy) < T.slamRadius! && this.sameHeightAs(p)) scene.hurtPlayer(this.x, this.y, T.damage);
+        this.playAnimation('cast', true);
+        shockwave(scene, this, stats.slamRadius!);
+        const player = scene.player;
+        const deltaX = player.x - this.x, deltaY = (player.y - this.y) / 0.6;
+        if (Math.hypot(deltaX, deltaY) < stats.slamRadius! && this.sameHeightAs(player)) scene.hurtPlayer(this.x, this.y, stats.damage);
       });
     }
   }
 
-  // Returns true if this hit killed the enemy.
-  takeHit(fromX: number, fromY: number, time: number, damage: number, knock: number) {
+  takeHit(fromX: number, fromY: number, time: number, damage: number, knockbackSpeed: number) {
     if (this.dead) return false;
     this.health -= damage;
     if (this.health <= 0) { this.die(); return true; }
-    const heavyBusy = this.stats.knockTaken < 1 && time < this.attackUntil;   // brutes shrug off hits mid-slam
+    const heavyBusy = this.stats.knockbackMultiplier < 1 && time < this.attackUntil;
     if (!heavyBusy) {
       this.attackUntil = 0;
       this.stunnedUntil = time + this.stats.stunMs;
-      this.playAnim('hurt', true);
+      this.playAnimation('hurt', true);
     }
-    this.push(fromX, fromY, knock * this.stats.knockTaken, this.stats.stunMs, time);
+    this.push(fromX, fromY, knockbackSpeed * this.stats.knockbackMultiplier, this.stats.stunMs, time);
     return false;
   }
 
   private die() {
     this.dead = true;
     this.clearTint();
-    this.playAnim('dead', true);
+    this.playAnimation('dead', true);
     this.scene.tweens.add({
       targets: [this, this.shadow], alpha: 0, delay: 1400, duration: 600,
       onComplete: () => this.destroy(),

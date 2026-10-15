@@ -1,23 +1,16 @@
-// =====================================================================
-// NET — everyone with the page open shares one room. Only hero positions
-// travel; zombies and brains stay local to each player.
-// Inside claude.ai the page's built-in room is used; elsewhere (e.g. Vercel)
-// a Supabase Realtime channel. With neither, the game plays solo.
-// =====================================================================
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { NET } from '../config';
-import type { HeroState, Peer } from '../types';
+import { MULTIPLAYER } from '../config';
+import type { NetworkPlayerState, RemotePlayer } from '../types';
 
 export interface Connection {
   readonly name: string;
-  send(hero: HeroState): void;
-  readonly peers: readonly Peer[];
+  send(hero: NetworkPlayerState): void;
+  readonly peers: readonly RemotePlayer[];
 }
 
-// The shape of claude.ai's room capability, as far as we use it.
 interface ClaudeRoom {
-  presence(state: { hero: HeroState }): Promise<unknown>;
-  onPeers(cb: (c: { peers: { peer: string; sameTab?: boolean; presence?: { hero?: HeroState } }[] }) => void): void;
+  presence(state: { hero: NetworkPlayerState }): Promise<unknown>;
+  onPeers(cb: (update: { peers: { peer: string; sameTab?: boolean; presence?: { hero?: NetworkPlayerState } }[] }) => void): void;
 }
 declare global {
   interface Window { claude?: { use?: (name: 'room') => Promise<ClaudeRoom | null> } }
@@ -25,14 +18,17 @@ declare global {
 
 let connection: Connection | null = null;
 
-// The current connection, or null while connecting / playing solo.
 export const getConnection = () => connection;
 
-// Trim, squash whitespace and cap the length; used for our own name and everyone else's.
+// The name this player picked; empty until they press Play.
+let playerName = '';
+export const getPlayerName = () => playerName;
+
 export const cleanName = (raw: unknown) =>
-  typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim().slice(0, NET.maxNameLength) : '';
+  typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim().slice(0, MULTIPLAYER.maxNameLength) : '';
 
 export async function connect(name: string) {
+  playerName = name;
   let room: ClaudeRoom | null = null;
   try { room = (await window.claude?.use?.('room')) ?? null; } catch { room = null; }
   if (room) return connectClaudeRoom(room, name);
@@ -42,9 +38,9 @@ export async function connect(name: string) {
 }
 
 function connectClaudeRoom(room: ClaudeRoom, name: string) {
-  let peers: Peer[] = [];
-  room.onPeers(c => {
-    peers = c.peers.flatMap(p => (!p.sameTab && p.presence?.hero ? [{ id: p.peer, hero: p.presence.hero }] : []));
+  let peers: RemotePlayer[] = [];
+  room.onPeers(update => {
+    peers = update.peers.flatMap(peer => (!peer.sameTab && peer.presence?.hero ? [{ id: peer.peer, hero: peer.presence.hero }] : []));
   });
   connection = {
     name,
@@ -53,21 +49,19 @@ function connectClaudeRoom(room: ClaudeRoom, name: string) {
   };
 }
 
-// Each browser signs in anonymously, so it keeps one player id across reloads.
-// Positions go out as broadcasts; presence tells us when someone closes the page.
 async function connectSupabase(url: string, anonKey: string, name: string) {
   const client = createClient(url, anonKey);
-  const me = await playerId(client);
-  const channel = client.channel(NET.channel, {
-    config: { broadcast: { self: false }, presence: { key: me } },
+  const localPlayerId = await playerId(client);
+  const channel = client.channel(MULTIPLAYER.channel, {
+    config: { broadcast: { self: false }, presence: { key: localPlayerId } },
   });
-  const heroes = new Map<string, { hero: HeroState; at: number }>();
-  let peers: Peer[] = [];
-  const refresh = () => { peers = [...heroes].map(([id, v]) => ({ id, hero: v.hero })); };
+  const heroes = new Map<string, { hero: NetworkPlayerState; receivedAt: number }>();
+  let peers: RemotePlayer[] = [];
+  const refresh = () => { peers = [...heroes].map(([id, entry]) => ({ id, hero: entry.hero })); };
   channel
     .on('broadcast', { event: 'hero' }, ({ payload }) => {
-      if (typeof payload?.peer !== 'string' || payload.peer === me) return;
-      heroes.set(payload.peer, { hero: payload.hero, at: Date.now() });
+      if (typeof payload?.peer !== 'string' || payload.peer === localPlayerId) return;
+      heroes.set(payload.peer, { hero: payload.hero, receivedAt: Date.now() });
       refresh();
     })
     .on('presence', { event: 'leave' }, ({ key }) => { heroes.delete(key); refresh(); })
@@ -76,20 +70,18 @@ async function connectSupabase(url: string, anonKey: string, name: string) {
       channel.track({});
       connection = {
         name,
-        send: hero => { channel.send({ type: 'broadcast', event: 'hero', payload: { peer: me, hero } }); },
+        send: hero => { channel.send({ type: 'broadcast', event: 'hero', payload: { peer: localPlayerId, hero } }); },
         get peers() { return peers; },
       };
     });
-  // Drop anyone we haven't heard from in a while (closed laptop, lost connection).
+
   setInterval(() => {
     const now = Date.now();
-    for (const [id, v] of heroes) if (now - v.at > NET.staleMs) heroes.delete(id);
+    for (const [id, entry] of heroes) if (now - entry.receivedAt > MULTIPLAYER.staleMs) heroes.delete(id);
     refresh();
   }, 1000);
 }
 
-// Reuse this browser's saved session, or sign in as a new anonymous player.
-// If anonymous sign-ins are off in Supabase, play on with a throwaway id.
 async function playerId(client: SupabaseClient) {
   const { data } = await client.auth.getSession();
   if (data.session) return data.session.user.id;
